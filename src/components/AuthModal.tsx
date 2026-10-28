@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Wallet } from 'lucide-react';
 import { Button } from './ui/Button';
@@ -12,8 +12,10 @@ interface AuthModalProps {
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
-  const { connectWallet, loading, error, clearError, isAuthenticated } = useAuthStore();
+  const { connectWallet, login, loading, error, clearError, isAuthenticated } = useAuthStore();
   const navigate = useNavigate();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
 
   const goToDashboard = useCallback(() => {
     onClose();
@@ -54,6 +56,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     clearError();
     const ok = await connectWallet();
     if (ok || useAuthStore.getState().isAuthenticated) {
+      goToDashboard();
+    }
+  };
+
+  const handleEmailLogin = async (event: React.FormEvent) => {
+    event.preventDefault();
+    clearError();
+    await login(email.trim(), password);
+    if (useAuthStore.getState().isAuthenticated) {
+      setPassword('');
       goToDashboard();
     }
   };
@@ -108,15 +120,42 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                       id="modal-title"
                       className="text-[28px] font-bold text-blue-700"
                     >
-                      Connect Wallet
+                      Sign In
                     </h2>
                     <p className="text-base text-neutral-600">
-                      Connect your wallet to access the platform
+                      Sign in with email or a wallet signature
                     </p>
                   </div>
 
                   {/* Form Content */}
                   <div className="mt-8 space-y-5">
+                    <form onSubmit={handleEmailLogin} className="space-y-3">
+                      <input
+                        type="email"
+                        required
+                        autoComplete="email"
+                        placeholder="Email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <input
+                        type="password"
+                        required
+                        autoComplete="current-password"
+                        placeholder="Password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <Button fullWidth type="submit" disabled={loading}>
+                        {loading ? 'Signing in...' : 'Sign In with Email'}
+                      </Button>
+                      <p className="text-xs text-neutral-500">Demo account: demo@rwahub.com / password</p>
+                    </form>
+                    <div className="flex items-center gap-3 text-xs text-neutral-400">
+                      <span className="h-px flex-1 bg-neutral-200" />or<span className="h-px flex-1 bg-neutral-200" />
+                    </div>
                     <Button
                       fullWidth
                       disabled={loading}

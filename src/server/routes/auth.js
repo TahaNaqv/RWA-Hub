@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const { ethers } = require('ethers');
 const bcrypt = require('bcryptjs');
 const db = require('../models/database');
 const { authLimiter } = require('../middleware/rateLimiting');
@@ -20,7 +22,13 @@ function getJwtSecret() {
 
 function signUserToken(user) {
   return jwt.sign(
-    { userId: user.id, email: user.email, roles: user.roles || ['buyer'] },
+    {
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      walletAddress: user.wallet?.address,
+      roles: user.roles || ['buyer']
+    },
     getJwtSecret(),
     { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
   );
@@ -34,6 +42,84 @@ const mockUser = {
   name: 'Demo User',
   roles: ['buyer', 'seller']
 };
+
+// Seed the demo account so email Sign In works against the real /login route
+if (!db.users.has(mockUser.id)) {
+  db.users.set(mockUser.id, { ...mockUser, createdAt: new Date(), updatedAt: new Date() });
+}
+
+// --- Wallet sign-in: nonce challenge + signature verification ---
+const WALLET_NONCE_TTL_MS = 5 * 60 * 1000;
+const walletNonces = new Map(); // lowercased address -> { nonce, expiresAt }
+
+const walletMessage = (address, nonce) =>
+  `Sign in to RWAHub\nAddress: ${address}\nNonce: ${nonce}`;
+
+function normalizeAddress(value) {
+  try {
+    return ethers.utils.getAddress(String(value));
+  } catch {
+    return null;
+  }
+}
+
+router.post('/wallet/nonce', authLimiter, (req, res) => {
+  const address = normalizeAddress(req.body?.address);
+  if (!address) {
+    return res.status(400).json({ error: 'A valid wallet address is required' });
+  }
+  const nonce = crypto.randomBytes(16).toString('hex');
+  walletNonces.set(address.toLowerCase(), { nonce, expiresAt: Date.now() + WALLET_NONCE_TTL_MS });
+  res.json({ nonce, message: walletMessage(address, nonce) });
+});
+
+router.post('/wallet', authLimiter, (req, res) => {
+  try {
+    const address = normalizeAddress(req.body?.address);
+    const signature = req.body?.signature;
+    if (!address || typeof signature !== 'string') {
+      return res.status(400).json({ error: 'Wallet address and signature are required' });
+    }
+
+    const key = address.toLowerCase();
+    const challenge = walletNonces.get(key);
+    walletNonces.delete(key); // single use, even on failure
+    if (!challenge || challenge.expiresAt < Date.now()) {
+      return res.status(401).json({ error: 'Sign-in challenge expired. Request a new one.' });
+    }
+
+    let recovered;
+    try {
+      recovered = ethers.utils.verifyMessage(walletMessage(address, challenge.nonce), signature);
+    } catch {
+      return res.status(401).json({ error: 'Invalid wallet signature' });
+    }
+    if (recovered !== address) {
+      return res.status(401).json({ error: 'Invalid wallet signature' });
+    }
+
+    let user = Array.from(db.users.values()).find(
+      (candidate) => candidate.wallet?.address?.toLowerCase() === key
+    );
+    if (!user) {
+      user = {
+        id: `wallet_${key.slice(2, 14)}`,
+        name: `${address.slice(0, 6)}...${address.slice(-4)}`,
+        roles: ['buyer', 'seller'],
+        wallet: { address, balance: 0, currency: 'USDT' },
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+      db.users.set(user.id, user);
+    }
+
+    const { password: _, ...userResponse } = user;
+    res.json({ user: userResponse, token: signUserToken(user), message: 'Wallet login successful' });
+  } catch (error) {
+    console.error('Error with wallet login:', error);
+    res.status(500).json({ error: 'Failed to login with wallet' });
+  }
+});
 
 // Register new user
 router.post('/register', authLimiter, validateUserRegistration, async (req, res) => {

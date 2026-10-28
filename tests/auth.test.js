@@ -278,11 +278,11 @@ describe('Authentication API Endpoints', () => {
         .expect(400);
     });
 
-    it('should return 403 with invalid token', async () => {
+    it('should return 401 with invalid token', async () => {
       await request(app)
         .post('/api/auth/refresh')
         .send({ token: 'invalid-token' })
-        .expect(403);
+        .expect(401);
     });
   });
 

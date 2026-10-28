@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { ethers } from 'ethers';
 import deployed from '@/config/contracts.json';
+import { API_BASE_URL } from '@/utils/apiBase';
 
 const PHAROS_DEVNET_CHAIN_ID = 50002;
 const PHAROS_DEVNET_HEX_CHAIN_ID = ethers.utils.hexValue(PHAROS_DEVNET_CHAIN_ID);
@@ -91,6 +92,45 @@ const getNormalizedError = (error: unknown): { code?: number; message: string } 
 
   return { message: 'Unknown wallet error' };
 };
+
+interface ServerUser {
+  id: string;
+  email?: string;
+  name?: string;
+  roles?: string[];
+  wallet?: { address?: string };
+}
+
+const postAuth = async <T>(path: string, body: unknown): Promise<T> => {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/auth${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error('Cannot reach the server. Is the API running?');
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = Array.isArray(data?.details) ? `: ${data.details.join(', ')}` : '';
+    throw new Error(`${data?.error || `Request failed (${response.status})`}${detail}`);
+  }
+  return data as T;
+};
+
+const toStoreUser = (server: ServerUser, previous?: User | null): User => ({
+  ...previous,
+  id: server.id,
+  email: server.email,
+  name: server.name,
+  roles: {
+    isBuyer: server.roles?.includes('buyer') ?? true,
+    isSeller: server.roles?.includes('seller') ?? false,
+  },
+  stats: previous?.stats ?? { totalPurchases: 0, totalSales: 0 },
+});
 
 const createWeb3Provider = (ethereum: any) =>
   new ethers.providers.Web3Provider(ethereum, 'any');
@@ -239,6 +279,8 @@ interface User {
 
 interface AuthState {
   isAuthenticated: boolean;
+  /** JWT issued by /api/auth; sent as a Bearer token on protected requests. */
+  token: string | null;
   user: User | null;
   loading: boolean;
   error: string | null;
@@ -260,27 +302,11 @@ interface AuthState {
   clearError: () => void; // Added clearError to the interface
 }
 
-const mockUsers = [
-  {
-    id: '1',
-    email: 'demo@example.com',
-    password: 'password123',
-    name: 'Demo User',
-    roles: {
-      isBuyer: true,
-      isSeller: false,
-    },
-    stats: {
-      totalPurchases: 0,
-      totalSales: 0,
-    },
-  },
-];
-
 export const useAuthStore = create<AuthState>()(
   persist(
     (set, get) => ({
       isAuthenticated: false,
+      token: null,
       user: null,
       loading: false,
       error: null,
@@ -291,17 +317,14 @@ export const useAuthStore = create<AuthState>()(
       login: async (email: string, password: string) => {
         try {
           set({ loading: true, error: null });
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-          const user = mockUsers.find(
-            (u) => u.email === email && u.password === password
-          );
-          if (!user) {
-            throw new Error('Invalid email or password');
-          }
-          const { password: _, ...userData } = user;
+          const { token, user } = await postAuth<{ token: string; user: ServerUser }>('/login', {
+            email,
+            password,
+          });
           set({
             isAuthenticated: true,
-            user: userData as User,
+            token,
+            user: toStoreUser(user),
             loading: false,
           });
         } catch (error) {
@@ -354,6 +377,7 @@ export const useAuthStore = create<AuthState>()(
             console.log('No wallet connected, clearing state...');
             set({
               isAuthenticated: false,
+              token: null,
               user: null,
               error: null,
               loading: false,
@@ -455,6 +479,14 @@ export const useAuthStore = create<AuthState>()(
             formattedBalance = '0';
           }
 
+          // Prove ownership of the address and exchange the signature for a JWT.
+          const { message } = await postAuth<{ message: string }>('/wallet/nonce', { address });
+          const signature = await requestWallet<string>(ethereum, 'personal_sign', [message, address]);
+          const session = await postAuth<{ token: string; user: ServerUser }>('/wallet', {
+            address,
+            signature,
+          });
+
           const currentUser = get().user;
           const wallet = {
             address,
@@ -463,14 +495,7 @@ export const useAuthStore = create<AuthState>()(
             chainId,
             balance: formattedBalance,
           };
-          const nextUser: User = currentUser
-            ? { ...currentUser, wallet }
-            : {
-                id: crypto.randomUUID(),
-                wallet,
-                roles: { isBuyer: true, isSeller: false },
-                stats: { totalPurchases: 0, totalSales: 0 },
-              };
+          const nextUser: User = { ...toStoreUser(session.user, currentUser), wallet };
 
           safeOff(activeEthereumProvider, 'accountsChanged', accountsChangedHandler);
           safeOff(activeEthereumProvider, 'chainChanged', chainChangedHandler);
@@ -547,6 +572,7 @@ export const useAuthStore = create<AuthState>()(
 
           set({
             isAuthenticated: true,
+            token: session.token,
             user: nextUser,
             loading: false,
             error:
@@ -563,6 +589,8 @@ export const useAuthStore = create<AuthState>()(
             errorMessage = 'Wallet connection was rejected.';
           } else if (normalized.code === -32002 || message.includes('already processing')) {
             errorMessage = 'MetaMask is already open. Confirm the pending request, then retry.';
+          } else if (message.includes('cannot reach the server') || message.includes('signature') || message.includes('challenge')) {
+            errorMessage = normalized.message;
           } else if (message.includes('install metamask') || message.includes('wallet provider is not available')) {
             errorMessage = 'Please install MetaMask or unlock it and refresh this page.';
           } else if (message.includes('receiving end does not exist')) {
@@ -611,6 +639,7 @@ export const useAuthStore = create<AuthState>()(
           activeEthereumProvider = null;
           set({
             isAuthenticated: false,
+            token: null,
             user: null,
             loading: false,
             error: null,
@@ -734,6 +763,7 @@ export const useAuthStore = create<AuthState>()(
       name: 'auth-storage',
       partialize: (state) => ({
         isAuthenticated: state.isAuthenticated,
+        token: state.token,
         user: state.user,
       }),
       onRehydrateStorage: () => (state) => {

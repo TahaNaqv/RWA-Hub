@@ -1,4 +1,20 @@
 import { API_BASE_URL } from '@/utils/apiBase';
+import { useAuthStore } from '@/store/authStore';
+
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+/** Bearer header for the JWT issued by /api/auth; empty for guests. */
+export function authHeaders(): Record<string, string> {
+  const token = useAuthStore.getState().token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 export function normalizeAsset(raw: any) {
   const priceAmount = Number(raw?.price?.amount ?? raw?.value ?? 0);
@@ -56,20 +72,19 @@ export async function createAssetOnApi(asset: any) {
       ? asset.imageUrl
       : 'https://images.pexels.com/photos/9978722/pexels-photo-9978722.jpeg',
     images: Array.isArray(asset.images) ? asset.images.filter((url: string) => typeof url === 'string' && url.startsWith('http')) : [],
-    owner: asset.owner,
-    status: asset.status,
-    isVerified: asset.isVerified,
+    // owner/status/isVerified are decided by the server from the JWT, not sent by the client.
     tokenId: asset.tokenId,
     value: asset.value ?? asset.price?.amount,
   };
 
   const response = await fetch(`${API_BASE_URL}/assets`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    throw new Error('Failed to create asset');
+    const data = await response.json().catch(() => ({}));
+    throw new ApiError(response.status, data?.error || 'Failed to create asset');
   }
   return normalizeAsset(await response.json());
 }

@@ -117,15 +117,41 @@ describe('Asset API Endpoints', () => {
       images: ['https://example.com/image.jpg']
     };
 
-    it('should create new asset with valid data', async () => {
+    let token;
+    beforeAll(async () => {
+      const login = await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'demo@rwahub.com', password: 'password' })
+        .expect(200);
+      token = login.body.token;
+    });
+
+    it('should return 401 for guests', async () => {
+      const res = await request(app).post('/api/assets').send(validAssetData).expect(401);
+      expect(res.body).toHaveProperty('error');
+    });
+
+    it('should return 401 for an invalid token', async () => {
+      await request(app)
+        .post('/api/assets')
+        .set('Authorization', 'Bearer not-a-real-token')
+        .send(validAssetData)
+        .expect(401);
+    });
+
+    it('should create asset owned by req.user, ignoring body owner', async () => {
       const res = await request(app)
         .post('/api/assets')
-        .send(validAssetData)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ ...validAssetData, owner: { id: 'attacker', name: 'Mallory' }, ownerId: 'attacker', isVerified: true, status: 'validated' })
         .expect(201);
 
       expect(res.body).toHaveProperty('id');
       expect(res.body.title).toBe(validAssetData.title);
+      expect(res.body.ownerId).toBe('user_demo');
+      expect(res.body.owner.id).toBe('user_demo');
       expect(res.body.status).toBe('pending');
+      expect(res.body.isVerified).toBe(false);
       expect(res.body.views).toBe(0);
     });
 
@@ -137,6 +163,7 @@ describe('Asset API Endpoints', () => {
 
       await request(app)
         .post('/api/assets')
+        .set('Authorization', `Bearer ${token}`)
         .send(invalidData)
         .expect(400);
     });
@@ -149,6 +176,7 @@ describe('Asset API Endpoints', () => {
 
       await request(app)
         .post('/api/assets')
+        .set('Authorization', `Bearer ${token}`)
         .send(invalidData)
         .expect(400);
     });
@@ -164,6 +192,7 @@ describe('Asset API Endpoints', () => {
 
       await request(app)
         .post('/api/assets')
+        .set('Authorization', `Bearer ${token}`)
         .send(invalidData)
         .expect(400);
     });

@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../models/database');
 const { validateAssetUpdate } = require('../middleware/validation');
-const { authenticateToken, optionalAuth } = require('../middleware/auth');
+const { authenticateToken } = require('../middleware/auth');
 const { testConfig } = require('../config');
 
 // Get all assets with optional filters
@@ -83,7 +83,7 @@ router.get('/:id', (req, res) => {
 });
 
 // Create new asset
-router.post('/', optionalAuth, (req, res) => {
+router.post('/', authenticateToken, (req, res) => {
   try {
     const title = String(req.body.title || '').trim();
     const description = String(req.body.description || '').trim();
@@ -92,7 +92,8 @@ router.post('/', optionalAuth, (req, res) => {
       return res.status(400).json({ error: 'Valid title, description, and price are required' });
     }
 
-    const ownerId = req.user?.userId || req.body.owner?.id || 'guest';
+    // Owner identity comes from the verified JWT only; body.owner / body.ownerId are ignored.
+    const ownerId = req.user.userId;
     const imageUrl = req.body.imageUrl || req.body.images?.[0] || '';
     const asset = db.createAsset({
       title,
@@ -111,13 +112,14 @@ router.post('/', optionalAuth, (req, res) => {
         pricePerToken: priceAmount
       },
       listingType: req.body.listingType || 'fixed',
-      owner: req.body.owner || {
+      owner: {
         id: ownerId,
-        name: req.user?.email || 'Guest'
+        name: req.user.name || req.user.email || req.user.walletAddress || ownerId
       },
       ownerId,
-      status: req.body.status || 'pending',
-      isVerified: Boolean(req.body.isVerified),
+      // Verification is a validator decision, never client-supplied.
+      status: 'pending',
+      isVerified: false,
       tokenId: req.body.tokenId,
       value: priceAmount
     });

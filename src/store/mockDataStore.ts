@@ -50,7 +50,7 @@ interface MockDataStore {
   getTotalValue: () => number;
   fetchAssets: () => Promise<void>;
   loadMoreAssets: () => Promise<void>;
-  addAsset: (asset: Asset) => void;
+  addAsset: (asset: Asset) => Promise<Asset>;
   filterAssets: (category?: AssetType, priceRange?: [number, number], verifiedOnly?: boolean) => Asset[];
   searchAssets: (query: string) => Asset[];
 }
@@ -404,17 +404,19 @@ export const useMockDataStore = create<MockDataStore>()((set, get) => ({
     return assetsRequest;
   },
 
-  addAsset: (asset) => {
+  addAsset: async (asset) => {
     set((state) => ({ assets: [asset, ...state.assets] }));
-    createAssetOnApi(asset)
-      .then((created) => {
-        set((state) => ({
-          assets: state.assets.map((item) => (item.id === asset.id ? created : item)),
-        }));
-      })
-      .catch((error) => {
-        console.error('Failed to save asset to API:', error);
-      });
+    try {
+      const created = await createAssetOnApi(asset);
+      set((state) => ({
+        assets: state.assets.map((item) => (item.id === asset.id ? created : item)),
+      }));
+      return created;
+    } catch (error) {
+      // Roll back the optimistic insert so rejected assets don't linger in the UI.
+      set((state) => ({ assets: state.assets.filter((item) => item.id !== asset.id) }));
+      throw error;
+    }
   },
 
   getFilteredAssets: () => {

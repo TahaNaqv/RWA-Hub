@@ -11,6 +11,7 @@ import { useMockDataStore } from '@/store/mockDataStore';
 import { useValidatorStore } from '@/store/validatorStore';
 import { useAuthStore } from '@/store/authStore';
 import { AssetCategory } from '@/types';
+import { ApiError } from '@/utils/apiAssets';
 import { createAssetOnChain, isOnChainConfigured } from '@/utils/onchain';
 
 interface FormData {
@@ -44,6 +45,9 @@ export default function TokenizePage() {
   const addAsset = useMockDataStore((state) => state.addAsset);
   const { validators, fetchValidators } = useValidatorStore();
   const user = useAuthStore((state) => state.user);
+  const token = useAuthStore((state) => state.token);
+  const [submitError, setSubmitError] = useState<{ status?: number; message: string } | null>(null);
+  const [created, setCreated] = useState<{ id: string; ownerId: string; ownerName: string } | null>(null);
 
   useEffect(() => {
     fetchValidators();
@@ -83,6 +87,8 @@ export default function TokenizePage() {
   });
 
   const handleSubmit = async () => {
+    setSubmitError(null);
+    setCreated(null);
     try {
       setStep(3); // Ensure we're on the final step
       
@@ -113,7 +119,7 @@ export default function TokenizePage() {
         }
       }
 
-      addAsset({
+      const savedAsset = await addAsset({
         id: `user-${Date.now()}`,
         title: formData.title || 'Untitled asset',
         description: formData.description || 'No description',
@@ -123,8 +129,9 @@ export default function TokenizePage() {
         imageUrl,
         createdAt: new Date(),
         updatedAt: new Date(),
+        // Placeholder for the optimistic row; the API replaces it with the JWT-derived owner.
         owner: {
-          id: user?.wallet?.address || user?.id || 'me',
+          id: user?.id || 'me',
           name: user?.name || 'You',
           rating: 5,
         },
@@ -142,6 +149,13 @@ export default function TokenizePage() {
         tokenId,
       });
 
+      const savedOwner = (savedAsset as any)?.owner;
+      setCreated({
+        id: String((savedAsset as any)?.id ?? ''),
+        ownerId: String((savedAsset as any)?.ownerId ?? savedOwner?.id ?? ''),
+        ownerName: String(savedOwner?.name ?? ''),
+      });
+
       toast.success(onChain ? 'Asset created on-chain' : 'Asset saved in demo mode', {
         id: 'ipfs-upload'
       });
@@ -154,19 +168,24 @@ export default function TokenizePage() {
           : 'Your asset has been submitted for validation.',
       });
 
-      navigate('/dashboard');
+      // Leave the success banner visible briefly so the server-assigned owner can be seen.
+      setTimeout(() => navigate('/dashboard'), 4000);
     } catch (error) {
       console.error('Submission error:', error);
-      
-      // Show error notification
-      toast.error('Failed to upload asset', {
+      const status = error instanceof ApiError ? error.status : undefined;
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      setSubmitError({ status, message });
+
+      toast.error(status === 401 ? 'Sign in required (401)' : 'Failed to upload asset', {
         id: 'ipfs-upload'
       });
 
       addNotification({
         type: 'error',
-        title: 'Submission Failed',
-        message: 'There was an error submitting your asset. Please try again.',
+        title: status === 401 ? 'Sign in required' : 'Submission Failed',
+        message: status === 401
+          ? 'The server rejected the request: no valid session token.'
+          : 'There was an error submitting your asset. Please try again.',
       });
     }
   };
@@ -190,6 +209,51 @@ export default function TokenizePage() {
             ? 'Uploads go to Pinata IPFS. Deploy contracts (`npm run deploy:local`) to verify Solidity in this page.'
             : 'Demo mode until you run `npm run chain` and `npm run deploy:local`. Then refresh and submit again to verify on-chain.'}
         </p>
+
+        <div className="mb-6 flex items-center justify-between text-xs text-neutral-600" data-testid="session-status">
+          <span>
+            API session:{' '}
+            {token
+              ? <span className="text-green-700 font-medium">JWT stored, sent as Bearer token</span>
+              : <span className="text-red-700 font-medium">no token (guest)</span>}
+          </span>
+          {import.meta.env.DEV && token && (
+            <button
+              type="button"
+              className="underline"
+              onClick={() => useAuthStore.setState({ token: null })}
+            >
+              Drop token (simulate guest)
+            </button>
+          )}
+        </div>
+
+        {created && (
+          <div className="mb-6 rounded-lg border border-green-200 bg-green-50 p-4 text-sm text-green-800" role="status">
+            <p className="font-medium">201 Created: asset {created.id}</p>
+            <p>Owner set by the server from your JWT: {created.ownerName} ({created.ownerId})</p>
+          </div>
+        )}
+
+        {submitError && (
+          <div className="mb-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800" role="alert">
+            <p className="font-medium">
+              {submitError.status === 401 ? '401 Unauthorized' : 'Submission failed'}: {submitError.message}
+            </p>
+            {submitError.status === 401 && (
+              <button
+                type="button"
+                className="mt-2 underline"
+                onClick={() => {
+                  useAuthStore.setState({ isAuthenticated: false, token: null, user: null });
+                  useAuthStore.getState().openAuthModal();
+                }}
+              >
+                Sign in again
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Progress Steps */}
         <div className="flex justify-between mb-12">
